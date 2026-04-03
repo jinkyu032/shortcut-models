@@ -74,6 +74,11 @@ def parse_args():
     parser.add_argument('--skip_extraction', action='store_true')
     parser.add_argument('--skip_probe', action='store_true')
     parser.add_argument('--num_classes', type=int, default=1000)
+    parser.add_argument('--imagenet_root', type=str,
+                        default='/131_data/datasets/ImageNetLDM',
+                        help='Root of ImageNetLDM folder '
+                             '(expects ILSVRC2012_train/train/ and '
+                             'ILSVRC2012_validation/validation/)')
     return parser.parse_args()
 
 
@@ -129,13 +134,67 @@ def load_model(checkpoint_dir, model_size, num_classes=1000):
 
 
 # ─── Dataset & VAE Encoding ───────────────────────────────────────────────────
-def encode_imagenet_split(is_train, num_samples, batch_size):
+def _build_imagenet_tf_dataset(split_dir, filelist_path, num_samples, batch_size, is_train):
+    """
+    Build a tf.data pipeline over raw ImageNet folder structure.
+    split_dir: e.g. /131_data/datasets/ImageNetLDM/ILSVRC2012_train/train
+    filelist_path: e.g. .../ILSVRC2012_train/filelist.txt  (lines: synset/fname.JPEG)
+    Returns (tf.data.Dataset yielding (images_bhwc float32 [-1,1], labels_int64)),
+            synset_to_idx dict.
+    """
+    import tensorflow as tf
+
+    # Build synset→label mapping (alphabetical = standard ImageNet order)
+    with open(filelist_path) as f:
+        rel_paths = [l.strip() for l in f if l.strip()]
+    synsets_sorted = sorted(set(p.split('/')[0] for p in rel_paths))
+    synset_to_idx = {s: i for i, s in enumerate(synsets_sorted)}
+
+    # Subsample
+    if num_samples < len(rel_paths):
+        rng = np.random.RandomState(42)
+        rel_paths = rng.choice(rel_paths, num_samples, replace=False).tolist()
+
+    abs_paths = [os.path.join(split_dir, p) for p in rel_paths]
+    labels    = [synset_to_idx[p.split('/')[0]] for p in rel_paths]
+
+    path_ds  = tf.data.Dataset.from_tensor_slices(abs_paths)
+    label_ds = tf.data.Dataset.from_tensor_slices(labels)
+
+    def load_and_resize(path):
+        raw = tf.io.read_file(path)
+        img = tf.image.decode_jpeg(raw, channels=3)
+        # centre-crop to square then resize
+        h, w = tf.shape(img)[0], tf.shape(img)[1]
+        side = tf.minimum(h, w)
+        img = tf.image.resize_with_crop_or_pad(img, side, side)
+        img = tf.image.resize(img, (256, 256), antialias=True)
+        if is_train:
+            img = tf.image.random_flip_left_right(img)
+        img = tf.cast(img, tf.float32) / 127.5 - 1.0  # → [-1, 1]
+        return img
+
+    img_ds = path_ds.map(load_and_resize, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = tf.data.Dataset.zip((img_ds, label_ds))
+    ds = ds.batch(batch_size, drop_remainder=False)
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+    return ds, synset_to_idx
+
+
+def encode_imagenet_split(is_train, num_samples, batch_size, imagenet_root):
     """Encode one ImageNet split to VAE latents. Returns (latents, labels)."""
-    from utils.datasets import get_dataset
     from utils.stable_vae import StableVAE
 
     n_dev = jax.local_device_count()
     split_name = 'train' if is_train else 'val'
+
+    if is_train:
+        split_dir     = os.path.join(imagenet_root, 'ILSVRC2012_train', 'train')
+        filelist_path = os.path.join(imagenet_root, 'ILSVRC2012_train', 'filelist.txt')
+    else:
+        split_dir     = os.path.join(imagenet_root, 'ILSVRC2012_validation', 'validation')
+        filelist_path = os.path.join(imagenet_root, 'ILSVRC2012_validation', 'filelist.txt')
+
     print(f"Setting up VAE on {n_dev} device(s)...")
     vae = StableVAE.create()
     scaling_factor = vae.module.config.scaling_factor
@@ -150,15 +209,15 @@ def encode_imagenet_split(is_train, num_samples, batch_size):
 
     params_rep = jax.device_put_replicated(vae.params, jax.local_devices())
 
-    print(f"Loading ImageNet [{split_name}] dataset...")
-    dataset = get_dataset('imagenet256', batch_size, is_train=is_train, debug_overfit=False)
+    print(f"Loading ImageNet [{split_name}] from {split_dir} ...")
+    ds, _ = _build_imagenet_tf_dataset(split_dir, filelist_path,
+                                        num_samples, batch_size, is_train)
 
-    num_batches = math.ceil(num_samples / batch_size)
     all_latents, all_labels = [], []
-    for batch_idx in tqdm.tqdm(range(num_batches), desc=f'Encoding [{split_name}]'):
-        images, labels = next(dataset)
-        B = images.shape[0]
-        imgs_bchw = images.transpose(0, 3, 1, 2)
+    for batch_idx, (imgs_np, lbls_np) in enumerate(
+            tqdm.tqdm(ds.as_numpy_iterator(), desc=f'Encoding [{split_name}]')):
+        B = imgs_np.shape[0]
+        imgs_bchw = imgs_np.transpose(0, 3, 1, 2)
         imgs_padded, orig_B = _pad_to_n(imgs_bchw, n_dev)
         imgs_sharded = _shard(imgs_padded, n_dev)
         batch_rng = jax.random.fold_in(vae_rng, batch_idx)
@@ -166,10 +225,10 @@ def encode_imagenet_split(is_train, num_samples, batch_size):
         latents_sharded = _p_encode(params_rep, rngs, imgs_sharded)
         latents = _unshard(latents_sharded, orig_B)
         all_latents.append(latents)
-        all_labels.append(np.array(labels))
+        all_labels.append(lbls_np)
 
-    latents = np.concatenate(all_latents, axis=0)[:num_samples]
-    labels  = np.concatenate(all_labels, axis=0)[:num_samples]
+    latents = np.concatenate(all_latents, axis=0)
+    labels  = np.concatenate(all_labels, axis=0)
     print(f"  [{split_name}] Encoded {len(latents)} images. Shape: {latents.shape}")
     return latents, labels
 
@@ -409,10 +468,12 @@ def main():
     # ── Feature extraction ────────────────────────────────────────────────
     if not args.skip_extraction:
         train_latents, train_labels = encode_imagenet_split(
-            is_train=True, num_samples=args.num_train_samples, batch_size=args.batch_size
+            is_train=True, num_samples=args.num_train_samples,
+            batch_size=args.batch_size, imagenet_root=args.imagenet_root
         )
         val_latents, val_labels = encode_imagenet_split(
-            is_train=False, num_samples=args.num_val_samples, batch_size=args.batch_size
+            is_train=False, num_samples=args.num_val_samples,
+            batch_size=args.batch_size, imagenet_root=args.imagenet_root
         )
 
         print("Loading model...")
