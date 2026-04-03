@@ -1,48 +1,47 @@
 name: probe-celeba-linear
 description: "Linear probing on CelebA shortcut model - Method B (train/val split)"
-project: jinkyu-shortcut
+mount:
+  /131_data/: volume://131data/root
+  /cvdata12/: volume://cvdata12/root
 resources:
-  cluster: snu-cvlab-mid
-  preset: a5000-4gpu-20cpu
+  cluster: snu-cvlab
+  preset: 4gpu-a6000
+  node_names:
+    - cvlab14
+    - cvlab16
+    - cvlab17
+    - cvlab19
 image: nvcr.io/nvidia/jax:24.04-py3
-datasets:
-  - mount_path: /131_data
-    storage_name: 131data
-  - mount_path: /cvdata12
-    storage_name: cvdata12
 import:
   /workspace/: git://github.com/jinkyu032/shortcut-models
-run:
-  - workdir: /workspace
-    command: |
-      # Install dependencies
-      pip install --quiet \
-        tensorflow-cpu==2.14.0 \
-        tensorflow-probability==0.22.0 \
-        tensorflow-datasets==4.9.4 \
-        scipy==1.12.0 \
-        matplotlib \
-        scikit-learn \
-        joblib \
-        tqdm \
-        einops \
-        jaxtyping \
-        absl-py \
-        ml-collections \
-        opt-einsum \
-        "diffusers>=0.30.0" \
-        transformers \
-        Pillow \
-        chex \
-        typeguard
-
-      python probe_celeba.py \
-        --checkpoint_dir "/cvdata12/jinkyu/shortcut-models/Shortcut Model Checkpoints/celeba-shortcut2-every4400001" \
-        --celeba_root /131_data/datasets/CelebA \
-        --save_dir /cvdata12/jinkyu/probe_features/celeba \
-        --output_dir /cvdata12/jinkyu/probe_results/celeba \
-        --num_train_samples 162770 \
-        --num_val_samples 19867 \
-        --batch_size 64 \
-        --layers last_4 \
-        --dt_base_max 5
+run: |
+  cd /workspace && \
+  pip install --quiet \
+    tensorflow-cpu==2.14.0 \
+    tensorflow-probability==0.22.0 \
+    tensorflow-datasets==4.9.4 \
+    scipy==1.12.0 \
+    matplotlib \
+    scikit-learn \
+    joblib \
+    tqdm \
+    einops \
+    jaxtyping \
+    absl-py \
+    ml-collections \
+    opt-einsum \
+    "diffusers>=0.30.0" \
+    transformers \
+    Pillow \
+    chex \
+    typeguard && \
+  python probe_celeba.py \
+    --checkpoint_dir "/cvdata12/jinkyu/shortcut-models/Shortcut Model Checkpoints/celeba-shortcut2-every4400001" \
+    --celeba_root /131_data/datasets/CelebA \
+    --save_dir /cvdata12/jinkyu/probe_features/celeba \
+    --output_dir /cvdata12/jinkyu/probe_results/celeba \
+    --num_train_samples 162770 \
+    --num_val_samples 19867 \
+    --batch_size 64 \
+    --layers last_4 \
+    --dt_base_max 5
