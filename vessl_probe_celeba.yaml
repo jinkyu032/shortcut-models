@@ -2,8 +2,8 @@ name: probe-celeba-linear
 description: "Linear probing on CelebA shortcut model - Method B (train/val split)"
 project: jinkyu-shortcut
 resources:
-  cluster: snu-cvlab-mid
-  preset: 4gpu-titanxp
+  cluster: snu-cvlab-303
+  preset: a6000-4gpu
 image: nvcr.io/nvidia/jax:24.04-py3
 datasets:
   - mount_path: /131_data
