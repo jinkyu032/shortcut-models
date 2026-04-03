@@ -20,7 +20,6 @@ Usage (inside Docker):
 """
 
 import argparse
-import math
 import os
 import numpy as np
 import jax
@@ -85,7 +84,8 @@ def parse_args():
     p.add_argument('--probe_c', type=float, default=1.0)
     p.add_argument('--skip_extraction', action='store_true')
     p.add_argument('--skip_probe', action='store_true')
-    p.add_argument('--tfds_data_dir', type=str, default=None)
+    p.add_argument('--celeba_root', type=str, default='/131_data/datasets/CelebA',
+                   help='Root of CelebA dataset (img_align_celeba/, list_attr_celeba.txt, etc.)')
     return p.parse_args()
 
 
@@ -155,7 +155,7 @@ def make_celeba_dataset(val_filenames, val_attrs, batch_size,
     return ds
 
 
-def setup_vae_pmap(celeba_root=CELEBA_ROOT):
+def setup_vae_pmap():
     """Create VAE + pmap'd encode. Returns (params_rep, encode_pmap_fn)."""
     from utils.stable_vae import StableVAE
     n_dev = jax.local_device_count()
@@ -578,18 +578,18 @@ def main():
     # ── Feature extraction ────────────────────────────────────────────────────
     if not args.skip_extraction:
         # Set up VAE once for both splits
-        params_rep, encode_pmap_fn = setup_vae_pmap(CELEBA_ROOT)
+        params_rep, encode_pmap_fn = setup_vae_pmap()
 
         # Encode train split (partition 0)
         train_latents, train_attrs = encode_celeba_split(
             0, args.num_train_samples, args.batch_size,
-            params_rep, encode_pmap_fn, CELEBA_ROOT
+            params_rep, encode_pmap_fn, args.celeba_root
         )
 
         # Encode val split (partition 1)
         val_latents, val_attrs = encode_celeba_split(
             1, args.num_val_samples, args.batch_size,
-            params_rep, encode_pmap_fn, CELEBA_ROOT
+            params_rep, encode_pmap_fn, args.celeba_root
         )
 
         # Load DiT model

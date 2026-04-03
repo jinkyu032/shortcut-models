@@ -2,8 +2,8 @@ name: probe-celeba-linear
 description: "Linear probing on CelebA shortcut model - Method B (train/val split)"
 project: jinkyu-shortcut
 resources:
-  cluster: snu-cvlab
-  preset: 4gpu-a6000
+  cluster: snu-cvlab-mid
+  preset: 4gpu-titanxp
 image: nvcr.io/nvidia/jax:24.04-py3
 datasets:
   - mount_path: /131_data
@@ -38,6 +38,7 @@ run:
 
       python probe_celeba.py \
         --checkpoint_dir "/cvdata12/jinkyu/shortcut-models/Shortcut Model Checkpoints/celeba-shortcut2-every4400001" \
+        --celeba_root /131_data/datasets/CelebA \
         --save_dir /cvdata12/jinkyu/probe_features/celeba \
         --output_dir /cvdata12/jinkyu/probe_results/celeba \
         --num_train_samples 162770 \

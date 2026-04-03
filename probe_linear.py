@@ -18,7 +18,6 @@ Usage:
 """
 
 import argparse
-import math
 import os
 import numpy as np
 import jax
@@ -181,10 +180,28 @@ def _build_imagenet_tf_dataset(split_dir, filelist_path, num_samples, batch_size
     return ds, synset_to_idx
 
 
-def encode_imagenet_split(is_train, num_samples, batch_size, imagenet_root):
-    """Encode one ImageNet split to VAE latents. Returns (latents, labels)."""
+def setup_vae_pmap():
+    """Create VAE + pmap'd encode once. Returns (params_rep, encode_pmap_fn)."""
     from utils.stable_vae import StableVAE
+    n_dev = jax.local_device_count()
+    print(f"Setting up VAE on {n_dev} device(s)...")
+    vae = StableVAE.create()
+    scaling_factor = vae.module.config.scaling_factor
 
+    @jax.pmap
+    def _p_encode(params, key, images_bchw):
+        latents = vae.module.apply(
+            {'params': params}, images_bchw, method=vae.module.encode
+        ).latent_dist.sample(key)
+        return latents * scaling_factor
+
+    params_rep = jax.device_put_replicated(vae.params, jax.local_devices())
+    return params_rep, _p_encode
+
+
+def encode_imagenet_split(is_train, num_samples, batch_size, imagenet_root,
+                          params_rep, encode_pmap_fn):
+    """Encode one ImageNet split to VAE latents. Returns (latents, labels)."""
     n_dev = jax.local_device_count()
     split_name = 'train' if is_train else 'val'
 
@@ -195,23 +212,12 @@ def encode_imagenet_split(is_train, num_samples, batch_size, imagenet_root):
         split_dir     = os.path.join(imagenet_root, 'ILSVRC2012_validation', 'validation')
         filelist_path = os.path.join(imagenet_root, 'ILSVRC2012_validation', 'filelist.txt')
 
-    print(f"Setting up VAE on {n_dev} device(s)...")
-    vae = StableVAE.create()
-    scaling_factor = vae.module.config.scaling_factor
     vae_rng = jax.random.PRNGKey(42 + int(is_train))
 
-    @jax.pmap
-    def _p_encode(params, key, images_bchw):
-        latents = vae.module.apply(
-            {'params': params}, images_bchw, method=vae.module.encode
-        ).latent_dist.sample(key)
-        return latents * scaling_factor
-
-    params_rep = jax.device_put_replicated(vae.params, jax.local_devices())
-
     print(f"Loading ImageNet [{split_name}] from {split_dir} ...")
+    # is_train=False for both splits: no random flip during encoding
     ds, _ = _build_imagenet_tf_dataset(split_dir, filelist_path,
-                                        num_samples, batch_size, is_train)
+                                        num_samples, batch_size, is_train=False)
 
     all_latents, all_labels = [], []
     for batch_idx, (imgs_np, lbls_np) in enumerate(
@@ -222,7 +228,7 @@ def encode_imagenet_split(is_train, num_samples, batch_size, imagenet_root):
         imgs_sharded = _shard(imgs_padded, n_dev)
         batch_rng = jax.random.fold_in(vae_rng, batch_idx)
         rngs = jnp.stack([jax.random.fold_in(batch_rng, d) for d in range(n_dev)])
-        latents_sharded = _p_encode(params_rep, rngs, imgs_sharded)
+        latents_sharded = encode_pmap_fn(params_rep, rngs, imgs_sharded)
         latents = _unshard(latents_sharded, orig_B)
         all_latents.append(latents)
         all_labels.append(lbls_np)
@@ -332,16 +338,14 @@ def _run_pair_layer(dt_base, t, layer_idx, layer_name, save_dir, probe_c, n_clas
     X_tr  = sc.fit_transform(X_tr)
     X_val = sc.transform(X_val)
 
-    clf = LogisticRegression(C=probe_c, max_iter=300, solver='saga',
-                             multi_class='multinomial', n_jobs=-1)
+    clf = LogisticRegression(C=probe_c, max_iter=200, solver='liblinear')
     clf.fit(X_tr, train_labels)
     top1 = clf.score(X_val, val_labels)
 
     if n_classes >= 5:
         proba = clf.predict_proba(X_val)
         top5_preds = np.argsort(proba, axis=1)[:, -5:]
-        top5 = float(np.mean([val_labels[i] in top5_preds[i]
-                               for i in range(len(val_labels))]))
+        top5 = float(np.any(top5_preds == val_labels[:, None], axis=1).mean())
     else:
         top5 = top1
 
@@ -467,13 +471,17 @@ def main():
 
     # ── Feature extraction ────────────────────────────────────────────────
     if not args.skip_extraction:
+        params_rep, encode_pmap_fn = setup_vae_pmap()
+
         train_latents, train_labels = encode_imagenet_split(
             is_train=True, num_samples=args.num_train_samples,
-            batch_size=args.batch_size, imagenet_root=args.imagenet_root
+            batch_size=args.batch_size, imagenet_root=args.imagenet_root,
+            params_rep=params_rep, encode_pmap_fn=encode_pmap_fn
         )
         val_latents, val_labels = encode_imagenet_split(
             is_train=False, num_samples=args.num_val_samples,
-            batch_size=args.batch_size, imagenet_root=args.imagenet_root
+            batch_size=args.batch_size, imagenet_root=args.imagenet_root,
+            params_rep=params_rep, encode_pmap_fn=encode_pmap_fn
         )
 
         print("Loading model...")
