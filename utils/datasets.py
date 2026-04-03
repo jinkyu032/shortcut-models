@@ -40,17 +40,18 @@ def get_dataset(dataset_name, batch_size, is_train, debug_overfit=False):
     elif dataset_name == 'celebahq256':
         def deserialization_fn(data):
             image = data['image']
-            image = tf.image.random_flip_left_right(image)
+            if is_train:
+                image = tf.image.random_flip_left_right(image)
             image = tf.cast(image, tf.float32)
             image = image / 255.0
             image = (image - 0.5) / 0.5 # Normalize to [-1, 1]
             return image,  data['label']
 
-        # split = tfds.split_for_jax_process('train' if is_train else 'validation', drop_remainder=True)
         split='train'
         dataset = tfds.load('celebahq256', split=split)
         dataset = dataset.map(deserialization_fn, num_parallel_calls=tf.data.AUTOTUNE)
-        dataset = dataset.shuffle(20000, seed=42+jax.process_index(), reshuffle_each_iteration=True)
+        if is_train:
+            dataset = dataset.shuffle(20000, seed=42+jax.process_index(), reshuffle_each_iteration=True)
         dataset = dataset.repeat()
         dataset = dataset.batch(batch_size)
         dataset = dataset.prefetch(tf.data.AUTOTUNE)

@@ -1,0 +1,40 @@
+name: probe-celeba-linear
+description: "Linear probing on CelebA shortcut model - Method B (train/val split)"
+resources:
+  cluster: snu-cvlab
+  preset: 4gpu-a6000
+image: nvcr.io/nvidia/jax:24.04-py3
+import:
+  /workspace/: git://github.com/jinkyu032/shortcut-models
+run:
+  - workdir: /workspace
+    command: |
+      # Install dependencies
+      pip install --quiet \
+        tensorflow-cpu==2.14.0 \
+        tensorflow-probability==0.22.0 \
+        tensorflow-datasets==4.9.4 \
+        scipy==1.12.0 \
+        matplotlib \
+        scikit-learn \
+        joblib \
+        tqdm \
+        einops \
+        jaxtyping \
+        absl-py \
+        ml-collections \
+        opt-einsum \
+        "diffusers>=0.30.0" \
+        transformers \
+        Pillow \
+        chex
+
+      python probe_celeba.py \
+        --checkpoint_dir "/cvdata12/jinkyu/shortcut-models/Shortcut Model Checkpoints/celeba-shortcut2-every4400001" \
+        --save_dir /tmp/probe_feats_celeba \
+        --output_dir /tmp/probe_results_celeba \
+        --num_train_samples 162770 \
+        --num_val_samples 19867 \
+        --batch_size 64 \
+        --layers last_4 \
+        --dt_base_max 5

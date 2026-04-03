@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+Shortcut Model Checkpoints/
+probe_feats*/
+probe_results*/
+*.npz
+*.npy
+wandb/
+.ipynb_checkpoints/
